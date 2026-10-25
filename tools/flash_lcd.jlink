@@ -1,0 +1,12 @@
+si SWD
+speed 2000
+device HC32F46X
+connect
+r
+h
+erase
+loadbin build/hc32_test.bin 0x00000000
+verifybin build/hc32_test.bin 0x00000000
+r
+g
+qc

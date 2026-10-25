@@ -1,0 +1,33 @@
+// ============================================================================
+// 读取原机固件运行状态（JBC.bin 烧录并确认后使用）
+//
+// 使用：
+//   JLinkExe -CommanderScript tools/read_original_ctx.jlink
+//
+// 原机 ctx 基址：0x20014A4C
+//   +0x08 state/u16, +0x0A PID/u16, +0x0C setpoint/u16
+//   +0x1C current/f32, +0x20 temp/f32, +0x24 VIN/f32
+//   +0x2F duty/u8
+// ============================================================================
+
+si SWD
+speed 1000
+device HC32F46X
+connect
+r
+Sleep 100
+g
+Sleep 5000
+h
+
+// ctx 前 16 个 word（含 state/PID/setpoint/current/temp/VIN/cal）
+mem32 0x20014A4C 16
+// 单独确认关键字段
+mem16 0x20014A54 1      // state + pid
+mem16 0x20014A58 1      // setpoint
+mem32 0x20014A68 1      // current
+mem32 0x20014A6C 2      // temp, VIN
+mem8  0x20014A7B 1      // duty (+0x2F)
+Regs
+
+qc

@@ -1,0 +1,49 @@
+// HC32F460 JBC 重构工程 —— 上机状态读取
+//
+// 注意：该 J-Link / 器件组合 connect 之后不会自动 halt，必须显式 h。
+// 地址来自 `make symbols`；全局量布局变化后必须重新核对。
+//
+// 期望值：
+//   systick_ms      每 5 s 增加约 5000（1 kHz）
+//   SystemCoreClock  = 0x0BEBC200  200 MHz
+//   SysTick CTRL     = 0x00010007  ENABLE|TICKINT|CLKSOURCE=HCLK
+//   SysTick LOAD     = 199999      1 kHz
+//   adc_isr_count    > 0           采样链在跑
+//   heater_pulses    > 0           加热脉冲在推进
+//
+// 启动失败不再写错误字：哪一步失败就停在哪一步的 while(1)，
+// 通过 PC 停在哪里即可判断（见 main.c）。
+
+si SWD
+speed 1000
+device HC32F46X
+connect
+h
+sleep 200
+
+// ---- 运行时状态 ----
+mem32 0x1FFF87D8 1      // systick_ms (t0)
+mem32 0x1FFF8090 1      // station 起始（off_timer_ms）
+mem32 0x1FFFD30C 1      // adc_isr_count
+mem32 0x1FFFD318 1      // heater_pulses
+
+// ---- 时钟寄存器 ----
+mem32 0x40054020 1      // CMU_SCFGR    期望 00112210
+mem8  0x40054026 1      // CMU_CKSWR    期望 05
+mem32 0x40054100 1      // CMU_PLLCFGR  期望 11103101
+mem32 0x40010408 1      // EFM_FRMC     期望 00000050
+mem32 0x40050800 1      // SRAMC_WTCR   期望 11001111
+mem8  0x4005403C 1      // CMU_OSCSTBSR bit0/3/5 = 1
+
+// ---- 时钟树 / SysTick ----
+mem32 0x20006914 1      // SystemCoreClock 期望 0BEBC200
+mem32 0xE000E010 2      // SysTick CTRL, LOAD
+
+g
+sleep 5000
+h
+mem32 0x1FFF87D8 1      // systick_ms (t1)，应比 t0 大约 5000
+mem32 0x1FFFD30C 1      // adc_isr_count，应明显增长
+mem32 0x1FFFD318 1      // heater_pulses，应明显增长
+g
+qc

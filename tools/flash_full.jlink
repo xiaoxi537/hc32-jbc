@@ -1,0 +1,17 @@
+// 全功能版：使能加热/PID
+// 运行目录：hc32f460/
+si SWD
+speed 1000
+device HC32F46X
+connect
+r
+Sleep 100
+h
+erase
+h
+Sleep 50
+loadbin build/hc32_full.bin 0x00000000
+r
+Sleep 100
+g
+qc

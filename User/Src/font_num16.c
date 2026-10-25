@@ -1,0 +1,43 @@
+/* 本文件由 tools/gen_cjk_font.py 自动生成，请勿手工修改 */
+/* 源字体: nk57-monospace.cdrg-bold.otf (face 0) */
+/* 字号: 16px  bpp: 2  字形数: 2  行高: 20  基线: 4 */
+
+#include <sgl.h>
+
+/* 字形点阵：行优先，MSB 优先，2 位/像素 */
+static const uint8_t num16_bitmap[] = {
+    0x0B,0xE4,0x2F,0xFC,0x3D,0x7C,0x7C,0x28,0x78,0x00,0x78,0x00,0x78,0x00,0x78,0x00,
+    0x78,0x00,0x7C,0x3C,0x3D,0x7C,0x2F,0xF8,0x0B,0xE0,0x0B,0xD0,0x1E,0xB0,0x18,0x34,
+    0x28,0x34,0x1C,0x74,0x0F,0xE0,0x01,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00,
+};
+
+/* 度量表：下标 0 为空白字形 */
+static const sgl_font_table_t num16_table[3] = {
+    {.bitmap_index = 0, .adv_w = 0, .box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0} /* reserved */,
+    {.bitmap_index = 0, .adv_w = 124, .box_w = 8, .box_h = 13, .ofs_x = 0, .ofs_y = 0} /* U+0043 */,
+    {.bitmap_index = 26, .adv_w = 124, .box_w = 8, .box_h = 13, .ofs_x = 0, .ofs_y = 0} /* U+00B0 */,
+};
+
+/* 码点列表：相对 32 的升序偏移 */
+static const uint16_t num16_list[2] = {
+    35,144,
+};
+
+static const sgl_font_unicode_t num16_unicode = {
+    .offset = 32,
+    .tab_offset = 1,
+    .list = num16_list,
+    .len = 2,
+};
+
+const sgl_font_t num16 = {
+    .bitmap = num16_bitmap,
+    .table = num16_table,
+    .font_table_size = 3,
+    .font_height = 20,
+    .base_line = 4,
+    .bpp = 2,
+    .unicode = &num16_unicode,
+    .unicode_num = 1,
+};

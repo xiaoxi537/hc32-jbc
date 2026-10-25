@@ -1,0 +1,44 @@
+// ============================================================================
+// 原机固件 JBC.bin 烧录脚本（只烧录，不自动运行）
+//
+// 目标：HC32F460 新板，J-Link SWD，1000 kHz
+// 镜像：../JBC.bin（447 520 B，原机 FreeRTOS 固件）
+//
+// 使用方式（手动执行，避免 J-Flash 与命令行抢 J-Link）：
+//   cd /home/bunny233/Documents/mcu/JBC_dump/hc32f460
+//   JLinkExe -CommanderScript tools/flash_original.jlink
+//
+// 注意：
+//   1. 烧录前给目标板断电 5 s，J-Link 重新插拔；
+//   2. 不要同时打开 J-Flash；
+//   3. 447 KB 会跨 Flash bank 1，若卡在 0x43600 附近，停止并断电，
+//      用 tools/flash_full.jlink 恢复 v4，不要连续重试；
+//   4. 本脚本烧完只复位并 halt，不 g，避免原机固件在未确认前直接加热。
+// ============================================================================
+
+si SWD
+speed 1000
+device HC32F46X
+connect
+r
+Sleep 100
+h
+
+// 整片擦除
+erase
+h
+Sleep 50
+
+// 原机镜像从 0x00000000 开始
+loadbin ../JBC.bin 0x00000000
+
+// 烧完复位并 halt，先检查向量表，不自动运行
+r
+Sleep 100
+h
+
+// 原机向量：初始 SP=0x20021550，Reset=0x00000420
+mem32 0x00000000 4
+mem32 0x00000400 4
+
+qc

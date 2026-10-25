@@ -1,0 +1,19 @@
+si SWD
+speed 4000
+device HC32F46X
+connect
+h
+sleep 100
+mem32 0xE000EDFC 1
+mem32 0xE0001000 1
+mem32 0xE0001004 1
+g
+sleep 3000
+h
+mem32 0xE0001004 1
+g
+sleep 9000
+h
+mem32 0xE0001004 1
+g
+qc

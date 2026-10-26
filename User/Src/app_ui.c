@@ -509,6 +509,32 @@ static uint8_t temp_valid;
  *
  * 代价（用户已确认接受）：改设定值 1~9℃ 时显示延后 800 ms 才跟上；
  * 改 10℃ 以上立刻到位。升温/降温过程动辄几十度，不受影响。 */
+/* "已到温就近显示"的容差：真实温度与设定值相差在此范围内时，
+ * 大数字直接显示设定值，而不是稳定化后的真实值。
+ * 目的：消除稳态偏差造成的"稳住了但显示不准"（实测待机 102 vs 设定 100）。 */
+#define HEAT_DISPLAY_NEAR_C     (5.0F)
+
+/* "已到温"显示状态的**撤销容差**（v9.28 —— 修阈值打架）
+ *
+ * 修掉的矛盾：
+ *   `app_heat.c` 的 `HEAT_REACH_EXIT_C = 2`（偏差 >2℃ 就清除 FLAG_TEMP_REACHED），
+ *   而本文件的 `HEAT_DISPLAY_NEAR_C = 5`（偏差 ≤5℃ 显示设定值）。
+ *   温度偏差在 **2~5℃** 之间时两个阈值互相矛盾：
+ *     · 标志已被清除 → `ready_shown` 变 0 → 就近显示失效 → 显示真实值
+ *     · 但偏差 <5℃ 本来属于"该显示设定值"的范围
+ *   实测 350℃ 降温经过 347~350（偏差 0~3℃）时来回穿越 2℃ 边界，
+ *   大数字就在 347↔350 跳、徽标同步在「已到温」/「加热中」翻。
+ *
+ * 修法：**UI 自己判断"还算不算到温"，用比就近显示更宽的容差。**
+ *
+ * 数值关系必须是：`HEAT_DISPLAY_NEAR_C(5) < READY_EXIT_TOLERANCE_C(8)`
+ *   · 偏差 ≤5℃  → 显示设定值（就近显示生效，徽标也保持已到温）
+ *   · 偏差 5~8℃ → 显示真实值，但徽标**仍保持已到温**（缓冲带）
+ *   · 偏差 >8℃  → 徽标才退出已到温
+ *   这个 3℃ 的错位让"数字变化"与"徽标变化"不同时发生，
+ *   视觉上不会两处一起闪，也彻底消除了 2~5℃ 的矛盾区。 */
+#define READY_EXIT_TOLERANCE_C  (8.0F)
+
 #define TEMP_JUMP_THRESHOLD     (10)    /* 偏差 >= 此值：立刻跟随 */
 #define TEMP_HOLD_STEPS         (9)     /* 偏差 <= 此值：按住，800 ms 后跟 */
 static uint32_t temp_hold_ms;
@@ -1593,39 +1619,62 @@ static int16_t stabilize_display_temp(int16_t raw_int)
  */
 static void update_ready_display(void)
 {
-    uint8_t want = (0U != (station.state & FLAG_TEMP_REACHED)) ? 1U : 0U;
+    uint8_t heat_flag = (0U != (station.state & FLAG_TEMP_REACHED)) ? 1U : 0U;
+    uint16_t setpoint;
+    float below;
     uint32_t now;
 
-    /* 期望值与当前显示一致：撤销计时作废，什么都不用做 */
-    if (want == ready_shown) {
-        ready_pending = 0U;
-        return;
-    }
-
-    /* 期望"置位"：立即生效（到温要立刻反馈） */
-    if (0U != want) {
-        ready_shown = 1U;
-        ready_pending = 0U;
-        return;
-    }
-
-    /* 期望"撤销"：等到确认满 300 ms 才真的撤。
+    /* ---- 先算"是否真的掉出到温带"（v9.28 修阈值打架） ----
      *
-     * **用 ready_pending 判"是否已在等待"，不要用 ready_change_ms == 0**
-     * （get_tick_ms() 可能返回 0，那样两种语义无法区分，见声明处说明）。
-     * 也不能每帧重置起点 —— 否则计时永远走不满 300 ms，
-     * 撤销就永远不发生（等于卡在"已到温"）。 */
-    now = get_tick_ms();
-    if (0U == ready_pending) {
-        ready_pending = 1U;                /* 首次发现要撤销：开始计时 */
-        ready_change_ms = now;
+     * 不再直接用 `heat_flag` 决定撤销。原因：
+     *   加热侧的退出判据只有 2℃（`HEAT_REACH_EXIT_C`），
+     *   而就近显示容差是 5℃（`HEAT_DISPLAY_NEAR_C`）。
+     *   偏差落在 2~5℃ 时两者矛盾 —— 标志说"已退出"、显示说"还在容差内"，
+     *   结果 350℃ 降温经过 347~350 时大数字在 347↔350 跳、徽标同步翻。
+     *
+     * 现在用 UI 自己的、更宽的 8℃ 判据：
+     *   只有真实温度低于 `设定值 - 8℃` 才算真的掉出去。
+     *   347~350（偏差 0~3℃）全在容差内，不会再翻。
+     *
+     * 用 `station.temperature`（控制侧 3 点快环）而不是显示值 ——
+     * 显示值可能已被"就近显示"改成设定值，拿它比较会永远满足。 */
+    setpoint = (0U != (station.state & FLAG_SLEEP)) ? 0U : get_setpoint();
+    below = (float)setpoint - station.temperature;   /* 正 = 比设定值低 */
+
+    /* ---- 该撤销：等满确认窗口（吃掉短抖动） ---- */
+    if ((setpoint > 0U) && (below > READY_EXIT_TOLERANCE_C)) {
+        now = get_tick_ms();
+
+        /* **用 ready_pending 判"是否已在等待"，不要用 ready_change_ms == 0**
+         * （get_tick_ms() 可能返回 0，那样两种语义无法区分）。
+         * 也不能每帧重置起点 —— 否则计时永远走不满，撤销永不发生。 */
+        if (0U == ready_pending) {
+            ready_pending = 1U;            /* 首次发现要撤销：开始计时 */
+            ready_change_ms = now;
+            return;
+        }
+        if ((now - ready_change_ms) < READY_HOLD_DISPLAY_MS) {
+            return;                        /* 还没确认满：继续显示已到温 */
+        }
+        ready_shown = 0U;                  /* 确认满：真的撤销 */
+        ready_pending = 0U;
         return;
     }
-    if ((now - ready_change_ms) < READY_HOLD_DISPLAY_MS) {
-        return;                            /* 还没确认满：继续显示已到温 */
-    }
-    ready_shown = 0U;                      /* 确认满：真的掉出到温带 */
+
+    /* ---- 不需要撤销：撤销计时作废 ---- */
     ready_pending = 0U;
+
+    /* 加热侧已到温 → 立即置位（到温要立刻反馈，不延迟） */
+    if (0U != heat_flag) {
+        ready_shown = 1U;
+        return;
+    }
+
+    /* 加热侧标志为 0，但温度仍在 8℃ 容差内 → **保持已到温显示**。
+     *
+     * 这一段正是修掉 347~350 闪烁的关键：标志在 2℃ 边界上翻它的，
+     * 只要真实温度还在设定值下方 8℃ 以内，显示就不动。
+     * 只有真的掉出 8℃（上面的分支）才会撤销。 */
 }
 
 static void update_state_badge(void)
@@ -1736,6 +1785,15 @@ static void refresh_main(void)
      * 第一次改过的 ready_change_ms，徽标与 MODE 框行为会不一致。 */
     update_ready_display();
 
+    /* **设定值必须先算出来**（v9.27）
+     *
+     * 温度显示要用它做"已到温就近显示"判断，所以不能等到后面
+     * 设定值框那里才算。休眠时按 0 处理（屏上设定值也显示 0）。 */
+    setpoint = (0U != (station.state & FLAG_SLEEP)) ? 0U : get_setpoint();
+    if (setpoint > 999U) {
+        setpoint = 999U;
+    }
+
     /* 顶栏：型号 / 状态（"主页"是固定文案，创建时已写好） */
     (void)snprintf(main_handle_text, sizeof(main_handle_text), "%s",
                    get_tip_code());
@@ -1769,7 +1827,25 @@ static void refresh_main(void)
         temp_hold_ms = 0U;
         (void)snprintf(main_temp_text, sizeof(main_temp_text), "--");
     } else {
-        int32_t value = stabilize_display_temp(station.temperature_int);
+        int32_t value = (int32_t)stabilize_display_temp(station.temperature_int);
+
+        /* **已到温且在 ±5℃ 内时，直接显示设定值**（v9.27）
+         *
+         * 稳定化只保证"数字不跳"，不纠正稳态偏差。实机待机实测稳定显示
+         * 102 而设定值是 100 —— 用户看到"稳住了但显示不准"。
+         *
+         * 判据用**真实温度**（控制侧 3 点快环），不用显示值：显示值可能
+         * 已被上帧的"就近显示"改成设定值，拿它比较会自我强化、回不来。 */
+        if ((0U != ready_shown) && (setpoint > 0U)) {
+            float diff = station.temperature - (float)setpoint;
+
+            if (diff < 0.0F) {
+                diff = -diff;
+            }
+            if (diff <= HEAT_DISPLAY_NEAR_C) {
+                value = (int32_t)setpoint;
+            }
+        }
 
         if (value < 0) {
             value = 0;
@@ -1784,11 +1860,7 @@ static void refresh_main(void)
                 main_temp_text);
     (void)place_temp_group(main_temp_text);
 
-    /* 设定值：休眠显示 0，待机显示待机温度，正常显示工作温度 */
-    setpoint = (0U != (station.state & FLAG_SLEEP)) ? 0U : get_setpoint();
-    if (setpoint > 999U) {
-        setpoint = 999U;
-    }
+    /* 设定值（已在函数开头算好） */
     (void)snprintf(main_set_text, sizeof(main_set_text), "%u",
                    (unsigned)setpoint);
     update_text(main_set_digits, main_set_shown, sizeof(main_set_text),
@@ -2224,7 +2296,26 @@ static page_id_t resolve_page(void)
  */
 static void sync_ready_display(void)
 {
-    ready_shown = (0U != (station.state & FLAG_TEMP_REACHED)) ? 1U : 0U;
+    uint16_t setpoint;
+    float below;
+
+    /* **与 update_ready_display() 用同一套判据**（v9.28）
+     *
+     * 早先这里直接读 `FLAG_TEMP_REACHED`（1℃ 滞回带）。若页切换正好
+     * 赶上标志被清除（350℃ 降温经过 347~350 时很常见），切回主界面
+     * 就显示"加热中"，而主界面的 update_ready_display() 下一帧又会
+     * 按 8℃ 容差改回"已到温" —— 同一次切换出现两种判断，更乱。
+     *
+     * 现在统一：真实温度还在 `设定值 - 8℃` 以内就算已到温（与主界面一致）。 */
+    setpoint = (0U != (station.state & FLAG_SLEEP)) ? 0U : get_setpoint();
+    below = (float)setpoint - station.temperature;   /* 正 = 比设定值低 */
+
+    if ((setpoint > 0U) && (below <= READY_EXIT_TOLERANCE_C)) {
+        ready_shown = 1U;                  /* 在容差内：按已到温显示 */
+    } else {
+        /* 不在容差内：只有加热侧确实到温才显示已到温 */
+        ready_shown = (0U != (station.state & FLAG_TEMP_REACHED)) ? 1U : 0U;
+    }
     ready_pending = 0U;
     ready_change_ms = 0UL;
 }

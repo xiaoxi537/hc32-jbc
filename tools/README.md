@@ -2,6 +2,11 @@
 
 **当前工程**：`hc32f460/`（裸机，200 MHz，SGL + 206 字子集，中文字体为微米黑 Mono 等宽版）
 
+> **2026-10-25 工具链变更**：J-Link 硬件损坏，**烧写改用 pyocd + DAPLink**。
+> 标准命令：`./tools/flash_pyocd.sh`（全功能版）/ `./tools/flash_pyocd.sh safe`（安全版）。
+> 详见 [`docs/分析进度与交接说明.md`](../docs/分析进度与交接说明.md) §37。
+> 下方所有 `*.jlink` 脚本**保留作历史参考，不再使用**（命令内容仍可对照）。
+
 | 路径 | 用途 | 是否在用 |
 |---|---|---|
 | `verify_clk.py` | 反汇编比对 `init_clock`，16 项静态检查 | ✅ |
@@ -21,8 +26,9 @@
 | `ui_arrow16_chars.txt` | `arrow16` 字符集（▶） | ✅ |
 | `ui_cjk52_chars.txt` | `cjk52` 字符集（无/工/具） | ✅ |
 | `ui_preview/` | PC 离屏渲染 `app_ui.c`，输出 320×240 PPM，对照 `docs/ui/*.html` | ✅ |
-| `flash_safe.jlink` | 烧安全版 `build/hc32_safe.bin`（1000 kHz，不加热） | ✅ |
-| `flash_full.jlink` | 烧全功能版 `build/hc32_full.bin`（1000 kHz，含加热） | ✅ |
+| **`flash_pyocd.sh`** | **烧写脚本（pyocd + DAPLink）**：`./tools/flash_pyocd.sh` 烧全功能版、`./tools/flash_pyocd.sh safe` 烧安全版、参数给文件路径则烧指定镜像。会自动打印镜像 SHA-256 便于核对 | ✅ **当前标准** |
+| `flash_safe.jlink` | 烧安全版（J-Link，1000 kHz）—— **J-Link 已损坏，保留仅作历史参考** | ⚠️ 停用 |
+| `flash_full.jlink` | 烧全功能版（J-Link，1000 kHz）—— 同上 | ⚠️ 停用 |
 | `flash_original.jlink` | 烧原机 `../JBC.bin`（447 KB，只烧不自动运行） | 对比用 |
 | `read_original_ctx.jlink` | 读取原机 `ctx=0x20014A4C` 状态/温度/PID/占空比 | 对比用 |
 | `read_original_curve.jlink` | 原机 C210 80→300 ℃ 升温曲线采样 | 对比用 |

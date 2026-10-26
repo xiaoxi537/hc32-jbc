@@ -6,12 +6,40 @@
 
 ## 0. 当前状态
 
-> **当前版本 v9.26（2026-10-25）**：**加热控制定档冻结于 v9.17**，只改 UI 显示。
+> # 🏁 v9.28 最终稳定版（2026-10-26）
+>
+> **实机验证：非常稳定** —— 待机 100℃、恒温 350℃ 都稳定，
+> 徽标/MODE 不再闪烁，三种手柄（T12/C245/C210）全部正常。
+> **加热控制与 UI 显示定档冻结，工程收尾。**
+>
+> **最后修的问题**：阈值打架 —— `HEAT_DISPLAY_NEAR_C`(5℃) 与
+> `HEAT_REACH_EXIT_C`(2℃) 在偏差 2~5℃ 时矛盾，导致 350℃ 降温经过
+> 347~350 时数字跳、徽标闪。修法：UI 用**独立 8℃ 撤销容差**，
+> 强制 `NEAR(5) < EXIT_TOLERANCE(8)`，让数字与徽标错开 3℃ 变化。
+>
+> | 项 | 值 |
+> |---|---|
+> | 镜像 | `build/hc32_full.bin` **80 144 B** |
+> | SHA-256 | `c356c47e036b8a76b39c1cd1f811351d2ab57cf3fdde36e4cb9fc155cfaed8c4` |
+> | 归档 | `tools/fw/app_v928_final_{full,safe}.bin` |
+>
+> 交接点：[`docs/分析进度与交接说明.md`](docs/分析进度与交接说明.md) §39
+>
+> ---
+>
+> v9.27（2026-10-26）：**加热控制定档冻结于 v9.17**，只改 UI 显示。
+> v9.27：**已到温且真实温度在设定值 ±5℃ 内时，大数字直接显示设定值** ——
+> 消除稳态偏差造成的"稳住了但显示不准"（实测待机稳在 102 而设定 100）。
+> 升温中/大幅掉温时仍显示真实温度，不会被钉住。
+>
+> v9.26（2026-10-25）：
 > **实机已验证（2026-10-25）**：**三种手柄（T12/C245/C210）全部稳定**；
 > 待机**稳定显示 102**（不再 99↔103 跳，偏高 2℃ 属控制域）、
 > 恒温**稳定显示 300** ✅；**显示更新速度偏慢**（慢跟 800 ms 的固有代价）；
 > **顶栏状态胶囊与 MODE 框仍闪烁，已知未修、暂缓**。
-> 定版备份见 [`tools/logs/backup_20261025_133659/`](tools/logs/backup_20261025_133659/README.md)。
+> **待办**：工程模式诊断页（关于本机连按 5 次进入）——
+> 需求与代码核对见 [`docs/feature_specs/工程模式需求.txt`](docs/feature_specs/工程模式需求.txt)，
+> 摘要见 [`交接说明`](docs/分析进度与交接说明.md) §36。**仅记录，未实现**。
 >
 > v9.26：阈值 **10/9**、慢跟 **800 ms**（治待机 99↔103 单次跳）；
 > 「已到温」撤销确认 **300→800 ms**；**`invalidate_text_cache()` 删掉 ready
@@ -103,9 +131,9 @@
 | 手柄识别 | T12/C245 仅上界 VIN<32；C210 10–32 V；C245 加热电偶判断 |
 | 设置保存 | Flash sector 31 (`0x3E000`)，magic/CRC，回主界面 200 ms 后保存 |
 | 代码规范 | **2026-10-19 全工程去匈牙利前缀、函数动词开头、注释讲原因**（见 `docs/架构与编码规范.md` §9） |
-| 当前固件 | **v9.26（2026-10-25）** 全功能 `text 79416 / data 148 / bss 59756`，bin **79 980 B**；安全版 79 880 B |
-| SHA-256 (full) | `965ab32daa3453012c6815c4dd6c390bf77a230a1d96c6c384c00ec4e17ca55e` |
-| SHA-256 (safe) | `e28dd17bfad1de2933208896806a0132b9732ee551278b73615c74f4a4fcada8` |
+| 当前固件 | 🏁 **v9.28 最终稳定版** 全功能 `text 79580 / data 148 / bss 59756`，bin **80 144 B**；安全版 80 044 B |
+| SHA-256 (full) | `c356c47e036b8a76b39c1cd1f811351d2ab57cf3fdde36e4cb9fc155cfaed8c4` |
+| SHA-256 (safe) | `986786854c5583e5001296fa3ec31cd45d65203468429a2cfa13f80b1329b23b` |
 | 当前烧入 | **v9.7 full**（2026-10-23 实机烧录，回读 80 432 B 哈希与镜像一致；混排字库、`°C` 底边对齐、胶囊 64/96 切换、快捷温度金色编辑态均已确认） |
 | UI 验证 | 主界面 / 无工具页 / 滚动菜单 / 快捷温度子页 / 双主题**均已上机确认**（`docs/ui/hw/`）；v9.7 另用芯片内 `sgl_obj_t.coords` 与 `sgl_rect_t.color` 逐项核对了排版与三态配色 |
 | 24 V 测试 | ⏸ **等定制焊台面板到货后装机测试**（届时才接 24 V 主供电） |
@@ -227,29 +255,43 @@ make full                 # build/hc32_full.bin
 # 安全版（强制 0 占空比，用于 UI/ADC/识别验证）
 make safe                 # 安全版：build/hc32_safe.bin
 
-# 打印 J-Link 需要读取的全局量地址
+# 打印调试器（pyocd / gdb）需要读取的全局量地址
 make symbols
 
 # 静态验证时钟初始化（16 项）
 python3 tools/verify_clk.py
 
-# 烧写（只用命令行；同一时间不要开 J-Flash）
-JLinkExe -CommanderScript tools/flash_safe.jlink
-# 或
-JLinkExe -CommanderScript tools/flash_full.jlink
+# 烧写（pyocd + DAPLink）
+./tools/flash_pyocd.sh           # 全功能版（会自动打印镜像 SHA-256）
+./tools/flash_pyocd.sh safe      # 安全版
 ```
 
 > `make safe` / `make full` 都会先 `make clean`，`build/` 里只保留最后一次
 > 生成的那份命名镜像；要同时留两份，先把自己需要的那份拷走。
 
-烧录脚本固定 **1000 kHz**，并在 `erase` 后显式 `halt` 再 `loadbin`。
-J-Link 卡住时：关闭 J-Flash、给目标板断电 5 s、J-Link 重插，再执行脚本。
+### 烧写工具链（2026-10-25 变更）
 
-> `tools/flash_lcd.jlink` 仍保留，加载 `build/hc32_test.bin`（当前构建产物）；
-> 日常请用 `flash_safe.jlink` / `flash_full.jlink`，避免烧错版本。
+**J-Link 硬件已损坏，改用 pyocd + DAPLink。**
 
-> **同一时间只能开一个 J-Link 工具**：J-Link GUI 与命令行并存会导致
-> USB 占用/复位时序冲突。
+| 项 | J-Link（旧） | pyocd + DAPLink（新） |
+|---|---|---|
+| 命令 | `JLinkExe -CommanderScript tools/flash_*.jlink` | `pyocd load -t hc32f460xe <bin> --base-address 0x0` |
+| 速度 | 1000 kHz | 约 21 kB/s（4.9 s 烧完 79 KB） |
+| 稳定性 | 偶发卡死，需断电重启 | 无卡死问题 |
+
+**烧写日志里的 `programmed 80384` 比镜像 79 980 B 多是正常的**：
+pyocd 按 4 字节字对齐向上取整（79980/4=19995 → 20096 字 → 80384 B）。
+
+回读校验（建议保留这个习惯）：
+```bash
+pyocd cmd -t hc32f460xe -c "save build/readback.bin 0x0 79980"
+sha256sum build/readback.bin build/hc32_full.bin   # 两者应一致
+```
+
+> `tools/*.jlink` 脚本（含 `flash_safe/flash_full/flash_lcd`）**保留作历史参考，
+> 不再使用**。详见 [`docs/分析进度与交接说明.md`](docs/分析进度与交接说明.md) §37。
+>
+> 下面两条 J-Link 注意事项**已失效**，保留仅作记录：
 
 ---
 
@@ -421,7 +463,8 @@ SGL 渲染 320×10 行缓冲（双缓冲 12.8 KB）
 2. `XTAL_VALUE` 必须 16 MHz；`bsp_clk.c` 已用 `_Static_assert` 拦住误编译。
 3. 本工程**不启用看门狗**；进入 24 V 闭环前建议补 SWDT。
 4. RAM `0x1FFF8000` 起 188 KB；当前 bss **59 620 B（约 58.2 KiB）**，其中 SGL 堆 24 KB，栈 8 KB。
-5. 无 `printf`（`LL_PRINT_ENABLE=DDL_OFF`），调试靠 J-Link 读全局量。
+5. 无 `printf`（`LL_PRINT_ENABLE=DDL_OFF`），调试靠调试器读全局量
+   （2026-10-25 起用 **pyocd + DAPLink**，`pyocd cmd -c "..."` 或 `pyocd gdbserver`）。
 6. **SGL 文本生命周期**：`sgl_label_set_text()` 只保存指针，字符串必须是静态/长期有效，
    不能传局部变量；本次声音页卡死就是该问题。
 7. **字体是子集**：新增中文界面文字后重跑
@@ -429,7 +472,8 @@ SGL 渲染 320×10 行缓冲（双缓冲 12.8 KB）
    改温度/设定值/无工具大字时，按对应 `tools/ui_*_chars.txt` 重生成，
    否则新字会显示空白/异常。数字字库多放一个字白占 ROM、少放一个字可能 HardFault。
 8. 设置区在 `0x3E000`；整片擦除烧录会清掉设置，烧完恢复默认。
-9. J-Link 只用命令行 1000 kHz；卡住先给目标板断电，不要只重插 J-Link。
+9. ~~J-Link 只用命令行 1000 kHz；卡住先给目标板断电~~ —— **已失效**：
+   J-Link 硬件损坏，改用 **pyocd + DAPLink**（见 §7「烧写工具链」与交接说明 §37）。
 10. **C210 的 ID 脚接 HEAT-**：加热后残留电平会把 ID 抬高；识别前必须先关加热等待。
 11. `tick_encoder` 和 `tick_heat` 都在 SysTick 1 ms 内；主循环只做 UI/菜单/设置。
 

@@ -67,6 +67,37 @@ if ! pyocd list | grep -qi "cmsis-dap\|daplink"; then
     exit 1
 fi
 
+# ---- 【安全步骤】烧录前强制把 PA10（加热 PWM）拉低 ----
+#
+# 为什么必须做：2026-11-09 出现过"烧录完成瞬间烙铁烧红"事故。
+# 加热关断依赖 TMRA6 中断里的 set_heat_pin(false)，而 pyocd 连接会
+# halt 内核、擦除又会清掉中断向量 → 中断不执行 → PA10 冻结在最后电平。
+# duty=80 时高电平占 31.2%，一旦冻结为高，加热就从 31% 变成 100% 持续导通。
+#
+# 这里在烧录前主动把 PA10 配成"输出低电平"，Q1 必然截止，
+# 即使随后 halt/擦除/复位，物理上也无法加热。
+#
+# 硬件依据：PA10 --R2 1kΩ-- Q1(MMBT2222A) 基极，R3 10kΩ 下拉 GND；
+#           Q1 截止 → Q3(G65P06D5 P沟道) 栅极被 R1 10kΩ 拉到 VIN
+#           → Vgs=0 → Q3 关断 → 24V 不进烙铁芯。
+# 确认加热回路已物理断开时可设 SKIP_HEAT_SAFE=1 跳过。
+if [ "${SKIP_HEAT_SAFE:-0}" != "1" ]; then
+    echo "---- 安全步骤：强制 PA10 低电平 ----"
+    PYOCD_PY="/home/bunny233/.local/share/pipx/venvs/pyocd/bin/python"
+    if [ -x "$PYOCD_PY" ]; then
+        if ! "$PYOCD_PY" "$SCRIPT_DIR/safe_heat_pin.py"; then
+            echo "错误：无法把 PA10 拉低，为防止加热失控已中止烧录" >&2
+            echo "      确认加热回路已断开后可设 SKIP_HEAT_SAFE=1 跳过" >&2
+            exit 1
+        fi
+    else
+        echo "警告：找不到 $PYOCD_PY，跳过安全步骤" >&2
+        echo "⚠ 此时烧录可能导致加热失控，请确认加热回路已断开" >&2
+        sleep 3
+    fi
+    echo
+fi
+
 # ---- 烧写 ----
 # -u : 指定探针 UID（未设置则用默认/唯一探针）
 # -t : 目标型号

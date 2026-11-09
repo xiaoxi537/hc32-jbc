@@ -29,6 +29,29 @@
 
 #define HEAT_RAW_OPEN_THRESHOLD     (3501U)     /* 断偶/无工具门限 */
 #define HEAT_TEMP_MAX               (470.0F)
+
+/* ---- 温度合理性上下限（v9.34 安全加固） ----
+ *
+ * 用途：判断"测温链是否可信"。只要读数超出物理可能范围，就禁止加热。
+ *
+ * 为什么需要：所有闭环保护（含 470℃ 过温）都建立在 station.temperature
+ * 之上。一旦这个读数本身是垃圾，保护就集体失效。
+ *
+ * 实测证据（2026-11-09，烧录瞬间内核 halt）：
+ *   用调试器读到的温度出现 1464.9℃、1106.93℃、0.0℃、566.75℃ 等值。
+ *   这类读数来自未初始化 RAM 或干扰，不是真实温度。
+ *   而当时固件仍在跑控制循环 → 若读数偏低，PID 会持续满功率加热。
+ *
+ * 取值依据：
+ *   上限 600℃：烙铁头熔点远低于此（焊锡 200~400℃），
+ *                热电偶量程按 350℃/830码 折算满量程约 1760℃，
+ *                600℃ 留足余量又能在明显异常时立刻切断。
+ *   下限 -50℃：热电偶不会低于环境温度太多，负值说明链路故障。
+ *                上电未初始化时读 0℃，也在合理范围内（室温附近），
+ *                所以不能简单用 "<=0 判故障"。 */
+#define HEAT_TEMP_SANE_MAX          (600.0F)
+#define HEAT_TEMP_SANE_MIN          (-50.0F)
+
 #define HEAT_PREHEAT_CYCLES         (15U)
 #define HEAT_DUTY_PREHEAT           (50U)
 #define HEAT_DUTY_MAX               (250U)
@@ -756,8 +779,15 @@ static void run_ready_phase(void)
     uint8_t duty;
     float error;            /* 控制侧温度 - 设定值（浮点，保留方向信息） */
 
-    /* 超过 470℃ 立刻断输出：热电偶可能脱焊，再加热会烧红烙铁头 */
+    /* 超过 470℃ 立刻断输出：热电偶可能脱焊，再加热会烧红烙铁头。
+     *
+     * v9.34：这里也必须调 stop_heat_output()。原来只清变量就 return，
+     * 当前正在跑的 25.34 ms 脉冲仍会跑完、PA10 可能还停在高电平；
+     * 只有 TMRA_Stop() + 拉低引脚才算物理关断。
+     * （task_heat 末尾还有一道统一终审，两处都留是有意的纵深防御：
+     *   这里能最早停手，那里保证任何分支都跑不掉。） */
     if (station.temperature > HEAT_TEMP_MAX) {
+        stop_heat_output();
         station.heat_duty = 0U;
         station.pid_out = 0U;
         station.state &= (uint16_t)(~FLAG_HEATING);
@@ -1012,7 +1042,43 @@ void task_heat(void)
         station.pid_out = 0U;
         station.state &= (uint16_t)(~FLAG_HEATING);
     }
-    start_heat_pulse(station.heat_duty);
+
+    /* ---- 温度合理性终审（v9.34 安全加固） ----
+     *
+     * 为什么必须放在这里，而不是只放在 run_ready_phase()：
+     *   start_heat_pulse() 是**整个工程唯一写硬件 PWM 的地方**，
+     *   只有在这一句之前把关，才能保证"无论走哪条控制分支都不会加热"。
+     *   原来的 470℃ 检查只在 run_ready_phase() 里，预热/识别/死区
+     *   等分支根本不经过它。
+     *
+     * 为什么保护触发必须调 stop_heat_output() 而不是只清变量：
+     *   清 station.heat_duty 只影响**下一拍**的下发值，
+     *   当前正在跑的 25.34 ms 脉冲仍然会跑完，PA10 可能还停在高电平。
+     *   stop_heat_output() 会 TMRA_Stop() 并立刻拉低 PA10，才是物理关断。
+     *
+     * 四个条件任一成立就不加热：
+     *   1. 超温（HEAT_TEMP_MAX 470℃）—— 热电偶脱焊/失控
+     *   2. 温度过高异常（>600℃）    —— 读数垃圾（曾实测到 1464.9℃）
+     *   3. 温度过低异常（<−50℃）    —— 负值/未初始化，说明测温链坏了
+     *   4. 过流闩锁                 —— ADC 中断已经置位
+     * 第 2、3 条是"测温链可信性"检查：只要读数不可信，就绝不能加热，
+     * 因为所有闭环保护都建立在这个读数之上。
+     *
+     * 注：HEAT_TEMP_MAX(470) 已被 HEAT_TEMP_SANE_MAX(600) 覆盖，
+     *     这里两个都保留是刻意的 —— 语义不同：470 是"工艺超温"，
+     *     600 是"读数不可信"。将来若调整工艺上限到 >600，
+     *     可信性检查仍然独立生效。 */
+    if ((station.temperature > HEAT_TEMP_MAX) ||
+        (station.temperature > HEAT_TEMP_SANE_MAX) ||
+        (station.temperature < HEAT_TEMP_SANE_MIN) ||
+        (0U != station.over_current_latch)) {
+        stop_heat_output();
+        station.heat_duty = 0U;
+        station.pid_out = 0U;
+        station.state &= (uint16_t)(~FLAG_HEATING);
+    } else {
+        start_heat_pulse(station.heat_duty);
+    }
 #else
     /* 安全版：物理输出和 UI 一起归零，避免屏幕上还显示"加热中" */
     station.heat_duty = 0U;

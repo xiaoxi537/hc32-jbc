@@ -82,7 +82,7 @@ extern "C"
 #define LL_SDIOC_ENABLE                             (DDL_OFF)
 #define LL_SPI_ENABLE                               (DDL_ON)
 #define LL_SRAM_ENABLE                              (DDL_ON)
-#define LL_SWDT_ENABLE                              (DDL_ON)   /* v9.35: 启用 SWDT（加热安全兜底） */
+#define LL_SWDT_ENABLE                              (DDL_ON)   /* v9.35: SWDT加热安全兜底 */
 #define LL_TMR0_ENABLE                              (DDL_OFF)
 #define LL_TMR4_ENABLE                              (DDL_OFF)
 #define LL_TMR6_ENABLE                              (DDL_OFF)

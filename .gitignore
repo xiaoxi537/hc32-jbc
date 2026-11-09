@@ -47,3 +47,4 @@ Thumbs.db
 
 # 基线数据：CSV 入库（对照基准，必须可追溯），但 PPM/临时文件不入库
 docs/baseline/failed/*.csv
+__pycache__/

@@ -35,10 +35,27 @@ TARGET = "hc32f460xe"
 BIN = os.path.join(ROOT, "build/hc32_test.bin")
 ELF = os.path.join(ROOT, "build/hc32_test.elf")
 
-# 地址（由 nm 从 build/hc32_test.elf 取得，随固件版本变化！）
-STATION = 0x1FFF80B8
-PID_INTEGRAL = 0x1FFF81B8
-SYSTICK_MS = 0x1FFF8848
+# 地址从当前 elf 动态读取，**不要硬编码**。
+#
+# 为什么：变量地址是编译期定的，改代码后地址会变。交接说明 §41.5 坑 A
+# 就是拿旧 elf 的地址读新固件，读出恒为 0，差点误判"积分从未累积"。
+# 本轮（v9.31 方法 B）实测 pid_integral 又从 0x1FFF81B8 挪到了 0x1FFF81C0，
+# 硬编码必然会踩。
+def _symbol_addr(name):
+    if not os.path.exists(ELF):
+        sys.exit(f"缺少 {ELF}，先 make full")
+    out = subprocess.run(["arm-none-eabi-nm", "-n", ELF],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == name:
+            return int(parts[0], 16)
+    sys.exit(f"elf 里找不到符号 {name}（可能被内联或改名）")
+
+
+STATION = _symbol_addr("station")
+PID_INTEGRAL = _symbol_addr("pid_integral")
+SYSTICK_MS = _symbol_addr("systick_ms")
 OFF_STATE = 0x08
 OFF_PID_OUT = 0x0A
 OFF_SET_TEMP = 0x0C

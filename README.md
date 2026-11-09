@@ -280,6 +280,10 @@ make safe                 # 安全版：build/hc32_safe.bin
 # 打印调试器（pyocd / gdb）需要读取的全局量地址
 make symbols
 
+# 内存占用摘要（从 linker map 里拎出内存区/节区/符号，不用翻 600 KB）
+make map
+make map MAP_FILE=build/hc32_full.map    # 看指定版本的 map
+
 # 静态验证时钟初始化（16 项）
 python3 tools/verify_clk.py
 

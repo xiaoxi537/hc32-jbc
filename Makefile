@@ -219,7 +219,7 @@ LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) \
 # LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections (原先的不报错)
 
 # default action: build all
-.PHONY: all clean symbols safe full
+.PHONY: all clean symbols safe full map
 
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
@@ -233,12 +233,16 @@ safe:
 	$(MAKE) EXTRA_DEFS="-DHEAT_OUTPUT_ENABLE=0"
 	cp $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/hc32_safe.bin
 	cp $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/hc32_safe.hex
+	cp $(BUILD_DIR)/$(TARGET).map $(BUILD_DIR)/hc32_safe.map
+	@echo "map: $(BUILD_DIR)/hc32_safe.map"
 
 full:
 	$(MAKE) clean
 	$(MAKE) EXTRA_DEFS="-DHEAT_OUTPUT_ENABLE=1"
 	cp $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/hc32_full.bin
 	cp $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/hc32_full.hex
+	cp $(BUILD_DIR)/$(TARGET).map $(BUILD_DIR)/hc32_full.map
+	@echo "map: $(BUILD_DIR)/hc32_full.map"
 
 
 #######################################
@@ -280,6 +284,36 @@ $(BUILD_DIR):
 #######################################
 symbols: $(BUILD_DIR)/$(TARGET).elf
 	@$(NM) -n $< | grep -E ' (systick_ms|SystemCoreClock|station|adc_raw|adc_isr_count|adc_over_current|heater_pulses|heater_duty)$$'
+
+#######################################
+# map 摘要：从 linker map 里拎出最常看的几项，不用翻 600 KB 的全文
+#
+# 为什么需要：map 文件已经由 -Wl,-Map 生成（$(TARGET).map，约 600 KB），
+# 但每次查 RAM 余量/最大栈需求都要在文件里翻很久。这个目标把
+# 内存区配置、三大节区大小、以及 text/data/bss 总量直接打出来。
+#
+# 用法：
+#   make map          打印摘要（build/hc32_test.map）
+#   make map MAP_FILE=build/hc32_full.map  看指定版本的 map
+#######################################
+MAP_FILE ?= $(BUILD_DIR)/$(TARGET).map
+
+map: $(MAP_FILE)
+	@echo "=== $(MAP_FILE) ==="
+	@echo
+	@echo "-- 内存区配置 --"
+	@grep -A 7 "^Memory Configuration" $< | tail -n +3
+	@echo
+	@echo "-- 三大节区 --"
+	@grep -E "^\\.(text|data|bss)\\s" $< || true
+	@echo
+	@echo "-- text/data/bss 总量（arm-none-eabi-size）--"
+	@$(SZ) $(BUILD_DIR)/$(TARGET).elf
+	@echo
+	@echo "完整 map 见: $<"
+
+# 让 make map 也能在 map 不存在时先构建
+$(BUILD_DIR)/$(TARGET).map: $(BUILD_DIR)/$(TARGET).elf
 
 #######################################
 # clean up

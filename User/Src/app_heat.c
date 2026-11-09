@@ -130,6 +130,15 @@
 #define HEAT_TRIM_STEP_BASE        (1U)
 #define HEAT_TRIM_STEP_MAX         (5U)
 
+/* 死区微调的**浮点**步长（v9.31 方法 B）
+ *
+ * 为什么可以从"整格"降到 0.2 格：整数步长是硬件限制造成的妥协，
+ * 不是控制需要。0.2 格配合 dither_duty() 的抖动，等效分辨率到 1/33 格。
+ * 取 0.2 而不是更小：太小会让死区微调追不上热漂移（每 3 拍只挪 0.2 格
+ * = 约 2.2 格/秒），0.2 在纠偏速度和精度之间是平衡点。
+ * 若实测发现纠偏偏慢，把这个值加大即可，不需要动逻辑。 */
+#define HEAT_TRIM_STEP_F           (0.2F)
+
 /* ---- 死区微调分频（v9.30，方法 A） ----
  *
  * 为什么加这个：实测 C210 24 V 恒温 350℃ 时平衡占空比只有 5.2 格
@@ -191,11 +200,35 @@ static uint8_t display_ring_fill;
 static bool ready_latched;
 static uint32_t ready_reach_ms;     /* 首次连续满足条件的时刻 */
 
-/* 加热死区：误差在 ±HEAT_DEADBAND_C 内时按偏差微调占空比（步长自适应） */
-static uint8_t deadband_duty;       /* 上次真正下发的占空比 */
+/* 加热死区：误差在 ±HEAT_DEADBAND_C 内时按偏差微调占空比
+ *
+ * v9.31：改成 float 保留小数。死区里每拍挪的量不再是整格，
+ * 配合 dither_duty() 才能真正平滑到 5.4 格这种平衡点。 */
+static float deadband_duty;         /* 上次真正下发的占空比（浮点） */
 static bool deadband_active;        /* 当前是否处于死区保持状态 */
 /* 死区微调分频计数器（v9.30）：攒够 HEAT_TRIM_DIV 拍才允许挪 1 格 */
 static uint8_t trim_count;
+
+/* ---- 占空比 Sigma-Delta 抖动累加器（v9.31，方法 B） ----
+ *
+ * 为什么需要：硬件 PWM 只接受整数占空比（0…250），而 C210 24 V 恒温
+ * 350℃ 的平衡点只有 5.2~5.4 格。截断成 5 格就长期少给 7% 功率，温度
+ * 必然往下掉；给 6 格又多 11%。**整数格本身就是量化器**，这才是
+ * "±19% 功率阶跃"的根源（v9.30 的方法 A 只把阶跃摊慢，没消除量化误差）。
+ *
+ * 做法：内部保留 float 占空比，输出时用一阶 Sigma-Delta 抖成整数：
+ *     sigma += duty_f;  out = (uint8)sigma;  sigma -= out;
+ * 长期平均严格等于 duty_f（5.4 → 每 5 拍有 2 拍给 6 格、3 拍给 5 格），
+ * 等效分辨率从 1 格提到约 1/33 格。
+ *
+ * 为什么一阶就够：一阶没有稳定性问题、不加额外状态，抖动频谱集中在
+ * 采样频率附近，会被烙铁头热惯性天然滤掉（热时间常数远大于 30 ms）。
+ * 二阶以上会引入极限环风险，对本应用无收益。
+ *
+ * 为什么保护时要清零：过流/断偶/休眠/联锁要求占空比严格为 0，
+ * 累加器若留着小数，恢复瞬间会多吐一格。 */
+static float duty_sigma;
+
 
 static float clamp_float(float value, float low, float high)
 {
@@ -252,11 +285,32 @@ static uint16_t run_pid(uint16_t setpoint)
 }
 
 /**
- * @brief  PID 输出换算成 0…250 的硬件占空比
+ * @brief  把 float 占空比抖成整数（一阶 Sigma-Delta）
+ * @note   每个控制周期**只能调用一次**，否则累加器会被推进两次、
+ *         实际输出功率翻倍。
+ */
+static uint8_t dither_duty(float duty_f)
+{
+    float acc = duty_sigma + duty_f;
+    uint8_t out = (uint8_t)acc;
+
+    /* 浮点误差可能让累加值略微越界，钳住后余数照常收回 */
+    if (out > HEAT_DUTY_MAX) {
+        out = HEAT_DUTY_MAX;
+    }
+    duty_sigma = acc - (float)out;
+    return out;
+}
+
+/**
+ * @brief  PID 输出换算成 0…250 的硬件占空比（浮点，未抖动）
  * @note   防护条件和原机 pwm_output_update 一致：
  *         过流闩锁 / 未允许输出 / 休眠 / 联锁 / 断偶 / 识别中 → 一律 0
+ *
+ * v9.31：改为返回 float 保留小数，由调用方经 dither_duty() 抖成整数。
+ * 保护条件触发时把累加器清零，避免恢复瞬间多吐一格。
  */
-static uint8_t scale_pwm_duty(uint16_t pid_out)
+static float scale_pwm_duty_float(uint16_t pid_out)
 {
     uint8_t channel = station.tip_channel;
     float scaled;
@@ -264,20 +318,24 @@ static uint8_t scale_pwm_duty(uint16_t pid_out)
 
     /* 过流闩锁只有重新识别烙铁头才清，中间任何情况都不许再输出 */
     if (0U != station.over_current_latch) {
-        return 0U;
+        duty_sigma = 0.0F;
+        return 0.0F;
     }
     /* ARMED 必须置位，且不能处在休眠或手柄座联锁状态 */
     if ((0U == (station.state & FLAG_ARMED)) ||
         (0U != (station.state & (FLAG_JBC_SW | FLAG_SLEEP)))) {
-        return 0U;
+        duty_sigma = 0.0F;
+        return 0.0F;
     }
     /* 断偶或还在预热验证时也不给输出 */
     if (0U != (station.state & (FLAG_TIP_FAULT | FLAG_DETECT))) {
-        return 0U;
+        duty_sigma = 0.0F;
+        return 0.0F;
     }
     /* 没识别出通道就没有功率曲线可查 */
     if (channel >= CHANNEL_COUNT) {
-        return 0U;
+        duty_sigma = 0.0F;
+        return 0.0F;
     }
 
     /* C210 在高压下只有十分之一功率，硬按 T12 的系数会烧红小烙铁头 */
@@ -289,9 +347,7 @@ static uint8_t scale_pwm_duty(uint16_t pid_out)
 
     /* 再乘用户设的输出功率百分比，最后钳到硬件上限 */
     duty = ((float)station.power_scale[channel] / 100.0F) * scaled;
-    duty = clamp_float(duty, 0.0F, (float)HEAT_DUTY_MAX);
-
-    return (uint8_t)duty;
+    return clamp_float(duty, 0.0F, (float)HEAT_DUTY_MAX);
 }
 
 /**
@@ -319,9 +375,11 @@ static void reset_temperature_filter(void)
     ready_latched = false;
     ready_reach_ms = 0U;
     deadband_active = false;
-    deadband_duty = 0U;
+    deadband_duty = 0.0F;
     /* 换头后分频计数器也要清零，否则新烙铁头可能顶着半程计数起步 */
     trim_count = 0U;
+    /* Sigma-Delta 累加器同样不能留残值，否则新头第一拍会多吐一格 */
+    duty_sigma = 0.0F;
 }
 
 /** 识别失败：清型号、禁止输出，等用户重新插好烙铁头 */
@@ -659,7 +717,6 @@ static void run_ready_phase(void)
 {
     uint16_t setpoint;
     uint8_t duty;
-    uint8_t step;           /* 死区微调步长（固定 1，见 HEAT_TRIM_STEP_BASE） */
     float error;            /* 控制侧温度 - 设定值（浮点，保留方向信息） */
 
     /* 超过 470℃ 立刻断输出：热电偶可能脱焊，再加热会烧红烙铁头 */
@@ -691,48 +748,43 @@ static void run_ready_phase(void)
     error = station.temperature - (float)setpoint;
     if ((error <= HEAT_DEADBAND_C) && (error >= -HEAT_DEADBAND_C) &&
         (0U == (station.state & FLAG_MENU))) {
-        /* 进入死区：在保持值基础上按偏差方向挪一格 */
+        /* 进入死区：在保持值基础上按偏差方向挪一小步 */
         deadband_active = true;
 
-        /* 步长固定 1，两端钳位（见 HEAT_TRIM_STEP_BASE 的说明） */
-        step = HEAT_TRIM_STEP_BASE;
-        if (step < 1U) {
-            step = 1U;                          /* 步长 0 会让占空比永久停住 */
-        }
-        if (step > HEAT_TRIM_STEP_MAX) {
-            step = HEAT_TRIM_STEP_MAX;          /* 防止一步跳太多 */
-        }
-
         /* 偏差要越过 0.1℃ 才动，否则平衡点附近会因浮点噪声每拍翻转。
-         * 偏差方向决定往哪个方向挪；分频计数决定"本拍是否真的挪"。 */
+         * 偏差方向决定往哪个方向挪；分频计数决定"本拍是否真的挪"。
+         *
+         * v9.31：微调量改成浮点小步（HEAT_TRIM_STEP_F），不再受
+         * "必须挪整格"的限制。配合 dither_duty() 可以把平衡占空比
+         * 精确到 1/33 格，而不是在 5 和 6 之间硬跳。 */
         if ((error > 0.1F) || (error < -0.1F)) {
-            /* 分频：攒够 HEAT_TRIM_DIV 拍才真正挪一格（v9.30 方法 A）。
-             * 攒不够时本拍占空比保持不动 —— 这正是把 ±19% 阶跃
-             * 摊成斜坡的地方，平均功率不变。 */
+            /* 分频：攒够 HEAT_TRIM_DIV 拍才真正挪一次（v9.30 方法 A）。
+             * 攒不够时占空比保持不动，避免每拍都打一次阶跃。 */
             trim_count++;
             if (trim_count >= HEAT_TRIM_DIV) {
                 trim_count = 0;
                 if (error > 0.1F) {
                     /* 偏高：往下减，不能减穿 0（减到 0 会被 PID 接管） */
-                    if (deadband_duty >= step) {
-                        deadband_duty = (uint8_t)(deadband_duty - step);
+                    if (deadband_duty >= HEAT_TRIM_STEP_F) {
+                        deadband_duty -= HEAT_TRIM_STEP_F;
                     } else {
-                        deadband_duty = 0U;
+                        deadband_duty = 0.0F;
                     }
                 } else {
                     /* 偏低：往上加，不能加穿硬件上限 */
-                    if (((uint16_t)deadband_duty + step) <= HEAT_DUTY_MAX) {
-                        deadband_duty = (uint8_t)(deadband_duty + step);
+                    if ((deadband_duty + HEAT_TRIM_STEP_F) <= (float)HEAT_DUTY_MAX) {
+                        deadband_duty += HEAT_TRIM_STEP_F;
                     }
                 }
             }
         } else {
             /* 在平衡点 ±0.1℃ 内：计数器清零，
-             * 避免攒了半程后下次轻微超调就立刻跳一格 */
+             * 避免攒了半程后下次轻微超调就立刻跳 */
             trim_count = 0;
         }
 
-        duty = deadband_duty;
+        /* 浮点占空比抖成整数再交给硬件 */
+        duty = dither_duty(deadband_duty);
         station.heat_duty = duty;
 
         /* **同步 D 项历史**：run_pid() 只在死区外调用，不同步的话
@@ -750,9 +802,10 @@ static void run_ready_phase(void)
          * 否则重新进死区时会带着上次的残余计数，第一格就提前跳 */
         trim_count = 0U;
         station.pid_out = run_pid(setpoint);
-        duty = scale_pwm_duty(station.pid_out);
+        /* v9.31：先算出浮点占空比（死区微调要用这个精度），再抖动输出 */
+        deadband_duty = scale_pwm_duty_float(station.pid_out);
+        duty = dither_duty(deadband_duty);
         station.heat_duty = duty;
-        deadband_duty = duty;
     }
 
     /* UI 靠 HEATING 位显示红色"加热中"。

@@ -51,6 +51,7 @@ User/Src/bsp_adc.c \
 User/Src/bsp_heater.c \
 User/Src/bsp_buzzer_backlight.c \
 User/Src/bsp_settings.c \
+User/Src/bsp_swdt.c \
 CMSIS/Device/HDSC/hc32f4xx/Source/system_hc32f460.c \
 Library/hc32_ll_lib/Src/hc32_ll.c \
 Library/hc32_ll_lib/Src/hc32_ll_adc.c \
@@ -176,6 +177,11 @@ AS_INCLUDES =
 C_DEFS = \
     -DHC32F460 \
     -DUSE_LL_LIB -DXTAL_VALUE=16000000UL -DUSE_DDL_DRIVER $(EXTRA_DEFS)
+
+# ICG 配置覆盖：必须用 -include 强制先于任何头文件展开，
+# 否则 hc32_ll_icg.h 里的 #ifndef ICG_REG_CFG0_CONST 已经用掉默认值了。
+# 目的：把 SWDT 改成"复位后自动启动"，见 User/Inc/icg_config.h。
+C_DEFS += -include User/Inc/icg_config.h
 
 
 # C includes

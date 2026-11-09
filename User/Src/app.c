@@ -18,6 +18,7 @@
 #include "app_ui.h"
 #include "bsp_adc.h"
 #include "bsp_buzzer_backlight.h"
+#include "bsp_swdt.h"
 #include "bsp_clk.h"
 #include "bsp_heater.h"
 #include "bsp_input.h"
@@ -32,6 +33,13 @@ static uint32_t last_save_ms;
 bool init_app(void)
 {
     uint32_t now;
+
+    /* 最优先：让 SWDT 在内核 halt 时暂停。
+     *
+     * 为什么放在所有初始化之前：调试器连上目标会立刻 halt 内核，
+     * 若此时 SWDT 还在计数，约 819 ms 后芯片就被复位，断点根本停不住。
+     * 这一步只写一两条寄存器指令，放在最前面最安全。 */
+    init_debug_freeze();
 
     /* 先建状态：后面每个模块都要读 station 里的用户参数 */
     init_station();
@@ -110,6 +118,15 @@ void task_app(void)
     /* SGL 任务：把脏区渲染进行缓冲并通过 SPI3/DMA1 送屏。
      * 漏掉这一句的现象是"背光亮、屏幕全黑"，因为 task_ui 只改文本和标脏。 */
     task_sgl_port();
+
+    /* 喂狗：放在主循环最末尾，意味着"一整轮调度都跑完了"才算数。
+     *
+     * 为什么不能放中断里：中断照常在跑时喂狗，即使主循环已经卡死，
+     * 看门狗也永远不会复位，等于没装。
+     * 为什么不会误复位：SWDT 超时 819 ms，而本函数最快每毫秒被调用一次，
+     * 即使某个分支（如写 Flash 扇区约十几 ms）耗时较长，
+     * 余量仍有 50 倍以上。 */
+    feed_swdt();
 }
 
 /*******************************************************************************

@@ -130,6 +130,26 @@
 #define HEAT_TRIM_STEP_BASE        (1U)
 #define HEAT_TRIM_STEP_MAX         (5U)
 
+/* ---- 死区微调分频（v9.30，方法 A） ----
+ *
+ * 为什么加这个：实测 C210 24 V 恒温 350℃ 时平衡占空比只有 5.2 格
+ * （满量程 250），1 格就是 ±19% 的相对功率阶跃。而占空比被
+ * (uint8_t) 截断成整数，改缩放除数也提不高分辨率（平衡点是热平衡
+ * 决定的，不由除数决定）。于是每拍挪 1 格 = 每拍打一次 ±19% 阶跃，
+ * 实测稳态幅度 12.65℃。
+ *
+ * 做法：不是每拍都允许微调，而是攒够 DIV 拍才挪 1 格。
+ * 效果是把 ±19% 的**阶跃**摊成 ±19%/DIV 的等效**斜坡**，
+ * 平均功率不变（不会引入稳态偏差），只是变化更细腻。
+ *
+ * 为什么取 3：33 Hz 下 3 拍约 91 ms，仍远快于烙铁头热时间常数
+ * （实测满占空比升温 80℃/s，温度对一拍就有响应），不会拖慢纠偏能力。
+ *
+ * 为什么不做成可调常量以外的形式：按最小化改动原则，只加这一处，
+ * 不碰 PID、不碰缩放、不碰滤波。若实测无效，把 DIV 改回 1 即完全
+ * 回到 v9.29 行为。 */
+#define HEAT_TRIM_DIV              (3U)
+
 /* 台架首测可以 -DHEAT_OUTPUT_ENABLE=0 强制占空比 0，识别/测温/UI 照常跑 */
 #ifndef HEAT_OUTPUT_ENABLE
 #define HEAT_OUTPUT_ENABLE          (1)
@@ -174,6 +194,8 @@ static uint32_t ready_reach_ms;     /* 首次连续满足条件的时刻 */
 /* 加热死区：误差在 ±HEAT_DEADBAND_C 内时按偏差微调占空比（步长自适应） */
 static uint8_t deadband_duty;       /* 上次真正下发的占空比 */
 static bool deadband_active;        /* 当前是否处于死区保持状态 */
+/* 死区微调分频计数器（v9.30）：攒够 HEAT_TRIM_DIV 拍才允许挪 1 格 */
+static uint8_t trim_count;
 
 static float clamp_float(float value, float low, float high)
 {
@@ -298,6 +320,8 @@ static void reset_temperature_filter(void)
     ready_reach_ms = 0U;
     deadband_active = false;
     deadband_duty = 0U;
+    /* 换头后分频计数器也要清零，否则新烙铁头可能顶着半程计数起步 */
+    trim_count = 0U;
 }
 
 /** 识别失败：清型号、禁止输出，等用户重新插好烙铁头 */
@@ -679,19 +703,33 @@ static void run_ready_phase(void)
             step = HEAT_TRIM_STEP_MAX;          /* 防止一步跳太多 */
         }
 
-        /* 偏差要越过 0.1℃ 才动，否则平衡点附近会因浮点噪声每拍翻转 */
-        if (error > 0.1F) {
-            /* 偏高：往下减，不能减穿 0（减到 0 会被 PID 接管，见下） */
-            if (deadband_duty >= step) {
-                deadband_duty = (uint8_t)(deadband_duty - step);
-            } else {
-                deadband_duty = 0U;
+        /* 偏差要越过 0.1℃ 才动，否则平衡点附近会因浮点噪声每拍翻转。
+         * 偏差方向决定往哪个方向挪；分频计数决定"本拍是否真的挪"。 */
+        if ((error > 0.1F) || (error < -0.1F)) {
+            /* 分频：攒够 HEAT_TRIM_DIV 拍才真正挪一格（v9.30 方法 A）。
+             * 攒不够时本拍占空比保持不动 —— 这正是把 ±19% 阶跃
+             * 摊成斜坡的地方，平均功率不变。 */
+            trim_count++;
+            if (trim_count >= HEAT_TRIM_DIV) {
+                trim_count = 0;
+                if (error > 0.1F) {
+                    /* 偏高：往下减，不能减穿 0（减到 0 会被 PID 接管） */
+                    if (deadband_duty >= step) {
+                        deadband_duty = (uint8_t)(deadband_duty - step);
+                    } else {
+                        deadband_duty = 0U;
+                    }
+                } else {
+                    /* 偏低：往上加，不能加穿硬件上限 */
+                    if (((uint16_t)deadband_duty + step) <= HEAT_DUTY_MAX) {
+                        deadband_duty = (uint8_t)(deadband_duty + step);
+                    }
+                }
             }
-        } else if (error < -0.1F) {
-            /* 偏低：往上加，不能加穿硬件上限 */
-            if (((uint16_t)deadband_duty + step) <= HEAT_DUTY_MAX) {
-                deadband_duty = (uint8_t)(deadband_duty + step);
-            }
+        } else {
+            /* 在平衡点 ±0.1℃ 内：计数器清零，
+             * 避免攒了半程后下次轻微超调就立刻跳一格 */
+            trim_count = 0;
         }
 
         duty = deadband_duty;
@@ -708,6 +746,9 @@ static void run_ready_phase(void)
     } else {
         /* 离开死区：正常跑 PID，并记下本拍占空比供下次进死区时用 */
         deadband_active = false;
+        /* 离开死区说明偏差已较大，微调分频计数作废，
+         * 否则重新进死区时会带着上次的残余计数，第一格就提前跳 */
+        trim_count = 0U;
         station.pid_out = run_pid(setpoint);
         duty = scale_pwm_duty(station.pid_out);
         station.heat_duty = duty;

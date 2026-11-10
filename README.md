@@ -314,11 +314,13 @@ AI 辅助使得重构过程不是对原厂的「拙劣模仿」，而是基于�
 
 ## 开源协议
 
-本项目采用多协议：
+**本工程原创代码采用 [MIT 协议](LICENSE)** —— 可自由使用、修改、分发，包括商用，
+只需保留版权声明。完整文本见根目录 [`LICENSE`](LICENSE)。
+
+第三方组件按其原有协议分发：
 
 | 部分 | 协议 | 文件 |
 |---|---|---|
-| 本工程原创代码 | MIT | [`LICENSES/MIT-License.txt`](LICENSES/MIT-License.txt) |
 | HC32F460 DDL（`Library/hc32_ll_lib/`） | BSD-3-Clause | [`LICENSES/HC32-BSD-3-Clause.txt`](LICENSES/HC32-BSD-3-Clause.txt) |
 | SGL 图形库（`Library/sgl/`） | MIT | [`LICENSES/SGL-MIT.txt`](LICENSES/SGL-MIT.txt) |
 
